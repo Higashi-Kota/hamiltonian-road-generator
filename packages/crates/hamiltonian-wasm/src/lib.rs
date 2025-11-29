@@ -52,6 +52,52 @@ const DIRECTIONS: [(i32, i32, &str); 4] = [
     (0, 1, "right"),
 ];
 
+// Maximum supported grid size: 20x20 = 400 cells
+// We use 7 x u64 = 448 bits to cover this
+const BITSET_SIZE: usize = 7;
+
+/// Compact bitset for tracking visited cells
+/// Much faster than Vec<Vec<bool>> due to better cache locality
+#[derive(Clone, Copy)]
+struct VisitedBitset {
+    bits: [u64; BITSET_SIZE],
+    cols: usize,
+}
+
+impl VisitedBitset {
+    #[inline]
+    fn new(cols: usize) -> Self {
+        Self {
+            bits: [0; BITSET_SIZE],
+            cols,
+        }
+    }
+
+    #[inline]
+    fn index(&self, row: i32, col: i32) -> (usize, usize) {
+        let bit_index = row as usize * self.cols + col as usize;
+        (bit_index / 64, bit_index % 64)
+    }
+
+    #[inline]
+    fn get(&self, row: i32, col: i32) -> bool {
+        let (word, bit) = self.index(row, col);
+        (self.bits[word] >> bit) & 1 == 1
+    }
+
+    #[inline]
+    fn set(&mut self, row: i32, col: i32) {
+        let (word, bit) = self.index(row, col);
+        self.bits[word] |= 1 << bit;
+    }
+
+    #[inline]
+    fn clear(&mut self, row: i32, col: i32) {
+        let (word, bit) = self.index(row, col);
+        self.bits[word] &= !(1 << bit);
+    }
+}
+
 // ============================================================================
 // Core Algorithm Implementation
 // ============================================================================
@@ -68,12 +114,12 @@ fn get_cell_parity(row: i32, col: i32) -> i32 {
     (row + col) % 2
 }
 
-/// Get unvisited neighboring cells
+/// Get unvisited neighboring cells (bitset version)
 fn get_unvisited_neighbors(
     row: i32,
     col: i32,
     grid_size: &GridSize,
-    visited: &[Vec<bool>],
+    visited: &VisitedBitset,
 ) -> Vec<(i32, i32, &'static str)> {
     let mut neighbors = Vec::with_capacity(4);
 
@@ -81,7 +127,7 @@ fn get_unvisited_neighbors(
         let nr = row + dr;
         let nc = col + dc;
 
-        if is_in_bounds(nr, nc, grid_size) && !visited[nr as usize][nc as usize] {
+        if is_in_bounds(nr, nc, grid_size) && !visited.get(nr, nc) {
             neighbors.push((nr, nc, dir));
         }
     }
@@ -89,56 +135,132 @@ fn get_unvisited_neighbors(
     neighbors
 }
 
-/// Count unvisited neighbors (optimized - no allocation)
+/// Count unvisited neighbors (optimized - no allocation, bitset version)
 #[inline]
-fn count_unvisited_neighbors(row: i32, col: i32, grid_size: &GridSize, visited: &[Vec<bool>]) -> u8 {
+fn count_unvisited_neighbors(row: i32, col: i32, grid_size: &GridSize, visited: &VisitedBitset) -> u8 {
     let mut count = 0u8;
     for &(dr, dc, _) in &DIRECTIONS {
         let nr = row + dr;
         let nc = col + dc;
-        if is_in_bounds(nr, nc, grid_size) && !visited[nr as usize][nc as usize] {
+        if is_in_bounds(nr, nc, grid_size) && !visited.get(nr, nc) {
             count += 1;
         }
     }
     count
 }
 
-/// Sort neighbors using Warnsdorff's heuristic (optimized with cached counts)
+/// Calculate Manhattan distance between two points
+#[inline]
+fn manhattan_distance(r1: i32, c1: i32, r2: i32, c2: i32) -> i32 {
+    (r1 - r2).abs() + (c1 - c2).abs()
+}
+
+/// Check if a cell is a corner of the grid
+#[inline]
+fn is_corner(row: i32, col: i32, grid_size: &GridSize) -> bool {
+    (row == 0 || row == grid_size.rows - 1) && (col == 0 || col == grid_size.cols - 1)
+}
+
+/// Check if a cell is on the edge of the grid
+#[inline]
+fn is_edge(row: i32, col: i32, grid_size: &GridSize) -> bool {
+    row == 0 || row == grid_size.rows - 1 || col == 0 || col == grid_size.cols - 1
+}
+
+/// Calculate priority score for neighbor selection (lower is better)
+/// This combines multiple heuristics for optimal path finding:
+/// 1. Warnsdorff's rule: prefer cells with fewer unvisited neighbors
+/// 2. Corner priority: visit corners early (they have limited access)
+/// 3. Edge priority: prefer edges over interior cells
+/// 4. Distance to endpoint: avoid getting too close too early
+#[inline]
+fn calculate_neighbor_priority(
+    row: i32,
+    col: i32,
+    target: &Point,
+    grid_size: &GridSize,
+    visited: &VisitedBitset,
+    unvisited_count: usize,
+) -> u32 {
+    // If this is the target, it should be visited last (unless it's the only option)
+    if row == target.row && col == target.col {
+        return u32::MAX;
+    }
+
+    let neighbor_count = count_unvisited_neighbors(row, col, grid_size, visited) as u32;
+
+    // Base score: Warnsdorff's heuristic (0-4 neighbors, scaled)
+    // Cells with fewer options should be visited first
+    let warnsdorff_score = neighbor_count * 100;
+
+    // Corner bonus: corners should be visited early as they have limited access
+    // Unvisited corners become increasingly dangerous
+    let corner_bonus = if is_corner(row, col, grid_size) {
+        0 // Highest priority
+    } else if is_edge(row, col, grid_size) {
+        10 // Second priority
+    } else {
+        20 // Interior cells last
+    };
+
+    // Distance penalty: avoid getting too close to target too early
+    let distance_to_target = manhattan_distance(row, col, target.row, target.col) as u32;
+    let total_cells = (grid_size.rows * grid_size.cols) as usize;
+
+    // When many cells remain, penalize being close to target
+    // When few cells remain, encourage moving toward target
+    let distance_factor = if unvisited_count > total_cells / 2 {
+        // Early game: penalize proximity to target
+        (10 - distance_to_target.min(10)) * 5
+    } else if unvisited_count > 3 {
+        // Mid game: neutral
+        0
+    } else {
+        // End game: reward proximity to target
+        distance_to_target * 3
+    };
+
+    // Check for cells that would become unreachable
+    // If a neighbor has only 1 unvisited neighbor (besides current), prioritize it
+    let urgency_bonus = if neighbor_count == 1 { 0 } else { 50 };
+
+    warnsdorff_score + corner_bonus + distance_factor + urgency_bonus
+}
+
+/// Sort neighbors using enhanced Warnsdorff's heuristic
+/// Combines multiple strategies for better path finding
 fn sort_by_warnsdorff(
     neighbors: &mut Vec<(i32, i32, &'static str)>,
     target: &Point,
     grid_size: &GridSize,
-    visited: &[Vec<bool>],
+    visited: &VisitedBitset,
+    unvisited_count: usize,
 ) {
-    // Cache neighbor counts before sorting to avoid repeated calculations
-    let mut neighbors_with_counts: Vec<((i32, i32, &'static str), u8)> = neighbors
+    // Calculate priority scores for all neighbors
+    let mut neighbors_with_priority: Vec<((i32, i32, &'static str), u32)> = neighbors
         .iter()
         .map(|&n| {
-            let is_target = n.0 == target.row && n.1 == target.col;
-            let count = if is_target {
-                u8::MAX // Target always sorted last
-            } else {
-                count_unvisited_neighbors(n.0, n.1, grid_size, visited)
-            };
-            (n, count)
+            let priority =
+                calculate_neighbor_priority(n.0, n.1, target, grid_size, visited, unvisited_count);
+            (n, priority)
         })
         .collect();
 
-    // Sort by cached count (fewer neighbors first, target last)
-    neighbors_with_counts.sort_by_key(|(_, count)| *count);
+    // Sort by priority (lower is better)
+    neighbors_with_priority.sort_by_key(|(_, priority)| *priority);
 
     // Update original vector
-    for (i, (neighbor, _)) in neighbors_with_counts.into_iter().enumerate() {
+    for (i, (neighbor, _)) in neighbors_with_priority.into_iter().enumerate() {
         neighbors[i] = neighbor;
     }
 }
 
-/// Check if remaining unvisited cells are connected (optimized version)
+/// Check if remaining unvisited cells are connected (optimized version with bitset)
 /// Uses a more efficient approach: instead of collecting all unvisited cells first,
-/// we do a single BFS/DFS and count reachable cells.
+/// we do a single DFS and count reachable cells.
 fn is_remaining_connected(
     grid_size: &GridSize,
-    visited: &[Vec<bool>],
+    visited: &VisitedBitset,
     unvisited_count: usize,
 ) -> bool {
     if unvisited_count <= 1 {
@@ -149,7 +271,7 @@ fn is_remaining_connected(
     let mut start: Option<(i32, i32)> = None;
     'outer: for r in 0..grid_size.rows {
         for c in 0..grid_size.cols {
-            if !visited[r as usize][c as usize] {
+            if !visited.get(r, c) {
                 start = Some((r, c));
                 break 'outer;
             }
@@ -162,15 +284,13 @@ fn is_remaining_connected(
     };
 
     // DFS using stack (faster than BFS for connectivity check)
-    // Use a flat visited array for BFS to avoid HashSet overhead
-    let rows = grid_size.rows as usize;
-    let cols = grid_size.cols as usize;
-    let mut bfs_visited = vec![false; rows * cols];
-    let mut stack = Vec::with_capacity(unvisited_count);
+    // Use bitset for DFS visited tracking (much faster than Vec<bool>)
+    let mut dfs_visited = VisitedBitset::new(grid_size.cols as usize);
+    let mut stack = Vec::with_capacity(unvisited_count.min(64));
     let mut reachable_count = 0usize;
 
     stack.push(start);
-    bfs_visited[start.0 as usize * cols + start.1 as usize] = true;
+    dfs_visited.set(start.0, start.1);
 
     while let Some((r, c)) = stack.pop() {
         reachable_count += 1;
@@ -184,12 +304,9 @@ fn is_remaining_connected(
             let nr = r + dr;
             let nc = c + dc;
 
-            if is_in_bounds(nr, nc, grid_size) {
-                let idx = nr as usize * cols + nc as usize;
-                if !visited[nr as usize][nc as usize] && !bfs_visited[idx] {
-                    bfs_visited[idx] = true;
-                    stack.push((nr, nc));
-                }
+            if is_in_bounds(nr, nc, grid_size) && !visited.get(nr, nc) && !dfs_visited.get(nr, nc) {
+                dfs_visited.set(nr, nc);
+                stack.push((nr, nc));
             }
         }
     }
@@ -204,7 +321,7 @@ fn is_likely_articulation_point(
     row: i32,
     col: i32,
     grid_size: &GridSize,
-    visited: &[Vec<bool>],
+    visited: &VisitedBitset,
 ) -> bool {
     // Count unvisited neighbors
     let neighbor_count = count_unvisited_neighbors(row, col, grid_size, visited);
@@ -217,9 +334,8 @@ fn is_likely_articulation_point(
 
     // Quick heuristic: corner and edge cells with 2+ unvisited neighbors
     // are less likely to be articulation points
-    let is_corner = (row == 0 || row == grid_size.rows - 1)
-        && (col == 0 || col == grid_size.cols - 1);
-    if is_corner && neighbor_count == 2 {
+    let is_corner_cell = is_corner(row, col, grid_size);
+    if is_corner_cell && neighbor_count == 2 {
         return false;
     }
 
@@ -271,7 +387,9 @@ fn find_hamiltonian_path_internal(
             iterations: 0,
         };
     }
-    let mut visited = vec![vec![false; grid_size.cols as usize]; grid_size.rows as usize];
+
+    // Use bitset for visited tracking (much faster than Vec<Vec<bool>>)
+    let mut visited = VisitedBitset::new(grid_size.cols as usize);
     let mut result_path: Vec<Point> = Vec::new();
     let mut found = false;
     let mut iterations: u32 = 0;
@@ -281,7 +399,7 @@ fn find_hamiltonian_path_internal(
         path: &mut Vec<Point>,
         end: &Point,
         grid_size: &GridSize,
-        visited: &mut [Vec<bool>],
+        visited: &mut VisitedBitset,
         unvisited_count: usize,
         max_iterations: u32,
         iterations: &mut u32,
@@ -309,14 +427,14 @@ fn find_hamiltonian_path_internal(
             return;
         }
 
-        // Get and sort neighbors
+        // Get and sort neighbors using enhanced heuristics
         let mut neighbors = get_unvisited_neighbors(current.row, current.col, grid_size, visited);
-        sort_by_warnsdorff(&mut neighbors, end, grid_size, visited);
+        sort_by_warnsdorff(&mut neighbors, end, grid_size, visited, unvisited_count);
 
         for (nr, nc, _) in neighbors {
             let is_endpoint = nr == end.row && nc == end.col;
 
-            visited[nr as usize][nc as usize] = true;
+            visited.set(nr, nc);
             let new_unvisited = unvisited_count - 1;
 
             // Pruning: check connectivity only when necessary
@@ -328,7 +446,7 @@ fn find_hamiltonian_path_internal(
 
             if should_check_connectivity && !is_remaining_connected(grid_size, visited, new_unvisited)
             {
-                visited[nr as usize][nc as usize] = false;
+                visited.clear(nr, nc);
                 continue;
             }
 
@@ -351,12 +469,12 @@ fn find_hamiltonian_path_internal(
             }
 
             path.pop();
-            visited[nr as usize][nc as usize] = false;
+            visited.clear(nr, nc);
         }
     }
 
     // Start backtracking
-    visited[start.row as usize][start.col as usize] = true;
+    visited.set(start.row, start.col);
     let mut path = vec![start];
     let initial_unvisited = total_cells - 1; // We've visited the start cell
 

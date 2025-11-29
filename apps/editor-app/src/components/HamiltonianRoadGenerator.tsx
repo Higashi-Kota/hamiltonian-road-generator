@@ -346,13 +346,11 @@ export default function HamiltonianRoadGenerator() {
     const newSize = { rows: r, cols: c }
     setGridSize(newSize)
     setState(createInitialState(newSize))
-    // Clear cache when grid size changes
     pathCacheRef.current.clear()
   }, [])
 
   const handleReset = useCallback(() => {
     setState(createInitialState(gridSize))
-    // Clear cache when resetting
     pathCacheRef.current.clear()
   }, [gridSize])
 
@@ -366,9 +364,8 @@ export default function HamiltonianRoadGenerator() {
   }, [])
 
   const handleCellClick = useCallback(
-    async (row: number, col: number) => {
+    (row: number, col: number) => {
       if (mode === "start") {
-        // Clear cache when start point changes
         pathCacheRef.current.clear()
         setState((prev) => ({
           ...prev,
@@ -424,7 +421,6 @@ export default function HamiltonianRoadGenerator() {
     (row: number, col: number) => {
       if (mode !== "end" || !startPoint) return
       if (startPoint.row === row && startPoint.col === col) {
-        // Cancel any pending calculation
         if (hoverTimerRef.current) {
           clearTimeout(hoverTimerRef.current)
           hoverTimerRef.current = null
@@ -438,21 +434,17 @@ export default function HamiltonianRoadGenerator() {
         return
       }
 
-      // Store pending hover point
       pendingHoverRef.current = { row, col }
 
-      // Update hover point immediately for visual feedback
       setState((prev) => ({
         ...prev,
         hoverPoint: { row, col },
       }))
 
-      // Check cache first
       const cacheKey = `${startPoint.row},${startPoint.col}-${row},${col}`
       const cachedPath = pathCacheRef.current.get(cacheKey)
 
       if (cachedPath !== undefined) {
-        // Use cached result immediately
         setState((prev) => ({
           ...prev,
           previewPath: cachedPath,
@@ -461,33 +453,26 @@ export default function HamiltonianRoadGenerator() {
         return
       }
 
-      // Cancel previous debounce timer
       if (hoverTimerRef.current) {
         clearTimeout(hoverTimerRef.current)
       }
 
-      // Show calculating indicator
       setState((prev) => ({
         ...prev,
         isCalculating: true,
       }))
 
-      // Debounce the calculation
       hoverTimerRef.current = setTimeout(() => {
-        // Verify we're still hovering the same cell
         const pending = pendingHoverRef.current
         if (!pending || pending.row !== row || pending.col !== col) {
           return
         }
 
-        // Calculate path
         const result = findHamiltonianPath(startPoint, { row, col }, gridSize)
         const resultPath = result.found ? result.path : []
 
-        // Cache the result
         pathCacheRef.current.set(cacheKey, resultPath)
 
-        // Update state if still hovering same cell
         setState((prev) => {
           if (prev.hoverPoint?.row !== row || prev.hoverPoint?.col !== col) {
             return { ...prev, isCalculating: false }
@@ -505,7 +490,6 @@ export default function HamiltonianRoadGenerator() {
 
   const handleCellLeave = useCallback(() => {
     if (mode === "end") {
-      // Cancel any pending calculation
       if (hoverTimerRef.current) {
         clearTimeout(hoverTimerRef.current)
         hoverTimerRef.current = null
