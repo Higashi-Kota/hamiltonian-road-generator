@@ -1,0 +1,26 @@
+{
+  "name": "hamiltonian-road-generator-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "clean": "pnpm -r clean && rm -rf node_modules pnpm-lock.yaml dist .tsbuildinfo",
+    "build:wasm": "pnpm --filter @hamiltonian/wasm build",
+    "build:prepare": "pnpm --filter '!./apps/editor-app' -r --workspace-concurrency=4 build",
+    "dev": "pnpm --filter @hamiltonian/editor-app dev",
+    "build": "pnpm build:wasm && pnpm build:prepare && pnpm --filter @hamiltonian/editor-app build",
+    "preview": "pnpm --filter @hamiltonian/editor-app preview",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "biome check .",
+    "lint:fix": "biome check . --fix --unsafe",
+    "format": "biome format . --write",
+    "package:check": "taze",
+    "package:update": "taze -w --install"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.8",
+    "@types/node": "^24.10.1",
+    "taze": "^19.9.2",
+    "typescript": "^5.9.3"
+  }
+}

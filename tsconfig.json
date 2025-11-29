@@ -1,0 +1,16 @@
+{
+  "extends": "./packages/shared-config/tsconfig/tsconfig.base.json",
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": ".tsbuildinfo",
+    "composite": true,
+    "declarationMap": false
+  },
+  "files": [],
+  "include": [],
+  "references": [
+    { "path": "./apps/editor-app" },
+    { "path": "./packages/lib" },
+    { "path": "./packages/shared-config" }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "@hamiltonian/wasm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "wasm-pack build --target web --out-dir pkg",
+    "build:release": "wasm-pack build --target web --out-dir pkg --release",
+    "test": "cargo test"
+  },
+  "files": [
+    "pkg"
+  ],
+  "main": "./pkg/hamiltonian_wasm.js",
+  "types": "./pkg/hamiltonian_wasm.d.ts"
+}

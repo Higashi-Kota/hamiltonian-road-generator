@@ -1,0 +1,33 @@
+{
+  "name": "@hamiltonian/editor-app",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "clean": "rm -rf dist node_modules *.tsbuildinfo",
+    "dev": "vite --force --port 5173",
+    "build": "vite build",
+    "preview": "vite preview --port 5173",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
+    "lint": "biome check src",
+    "lint:fix": "biome check src --fix --unsafe",
+    "format": "biome format src --write"
+  },
+  "dependencies": {
+    "@hamiltonian/lib": "workspace:*",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.8",
+    "@internal/shared-config": "workspace:*",
+    "@tailwindcss/vite": "^4.1.17",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "tailwindcss": "^4.1.17",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.4"
+  }
+}
