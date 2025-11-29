@@ -141,3 +141,13 @@ export {
   pathToRoadGridAsync,
   terminateWorker,
 } from "./async-api"
+export {
+  type CellState,
+  type CellStateListener,
+  type CellStatus,
+  HoverQueueManager,
+  type MetricsListener,
+  type QueueMetrics,
+} from "./hover-queue"
+// Re-export queue utilities
+export { SmartQueue } from "./smart-queue"
