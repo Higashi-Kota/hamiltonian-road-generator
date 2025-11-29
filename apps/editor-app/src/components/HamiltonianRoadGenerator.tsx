@@ -18,6 +18,8 @@ import {
   type RoadGrid,
 } from "@hamiltonian/lib"
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useHoverQueue } from "../hooks/useHoverQueue"
+import RequestMetricsPanel from "./RequestMetricsPanel"
 
 // ============================================================================
 // Types
@@ -369,6 +371,14 @@ export default function HamiltonianRoadGenerator() {
   // Pending hover point for debounce
   const pendingHoverRef = useRef<Point | null>(null)
 
+  // Hover queue manager for cell-based state tracking
+  const hoverQueue = useHoverQueue()
+
+  // Initialize queue grid size
+  useEffect(() => {
+    hoverQueue.setGridSize(gridSize.rows, gridSize.cols)
+  }, [gridSize.rows, gridSize.cols, hoverQueue.setGridSize])
+
   // Parity table cache - recomputed only when grid size changes
   const parityTable = useMemo(() => createParityTable(gridSize), [gridSize])
 
@@ -389,19 +399,24 @@ export default function HamiltonianRoadGenerator() {
   // Event Handlers
   // ============================================================================
 
-  const handleResize = useCallback((rows: number, cols: number) => {
-    const r = Math.max(2, Math.min(20, rows))
-    const c = Math.max(2, Math.min(40, cols))
-    const newSize = { rows: r, cols: c }
-    setGridSize(newSize)
-    setState(createInitialState(newSize))
-    pathCacheRef.current.clear()
-  }, [])
+  const handleResize = useCallback(
+    (rows: number, cols: number) => {
+      const r = Math.max(2, Math.min(20, rows))
+      const c = Math.max(2, Math.min(40, cols))
+      const newSize = { rows: r, cols: c }
+      setGridSize(newSize)
+      setState(createInitialState(newSize))
+      pathCacheRef.current.clear()
+      hoverQueue.reset()
+    },
+    [hoverQueue.reset],
+  )
 
   const handleReset = useCallback(() => {
     setState(createInitialState(gridSize))
     pathCacheRef.current.clear()
-  }, [gridSize])
+    hoverQueue.reset()
+  }, [gridSize, hoverQueue.reset])
 
   // Cleanup debounce timer on unmount
   useEffect(() => {
@@ -416,6 +431,8 @@ export default function HamiltonianRoadGenerator() {
     async (row: number, col: number) => {
       if (mode === "start") {
         pathCacheRef.current.clear()
+        // Mark start cell on minimap
+        hoverQueue.markStart(row, col)
         setState((prev) => ({
           ...prev,
           startPoint: { row, col },
@@ -451,6 +468,8 @@ export default function HamiltonianRoadGenerator() {
         }
 
         if (resultPath.length > 0) {
+          // Mark goal cell on minimap (overwrites found/not_found status)
+          hoverQueue.markGoal(row, col)
           const roadGrid = await pathToRoadGridAsync(resultPath, gridSize)
           setState((prev) => ({
             ...prev,
@@ -472,7 +491,15 @@ export default function HamiltonianRoadGenerator() {
         }
       }
     },
-    [mode, startPoint, gridSize, previewPath, hoverPoint],
+    [
+      mode,
+      startPoint,
+      gridSize,
+      previewPath,
+      hoverPoint,
+      hoverQueue.markStart,
+      hoverQueue.markGoal,
+    ],
   )
 
   const handleCellHover = useCallback(
@@ -503,6 +530,8 @@ export default function HamiltonianRoadGenerator() {
       const cachedPath = pathCacheRef.current.get(cacheKey)
 
       if (cachedPath !== undefined) {
+        // Mark cell as cached hit (found or not_found based on cached result)
+        hoverQueue.markCached(row, col, cachedPath.length > 0)
         setState((prev) => ({
           ...prev,
           previewPath: cachedPath,
@@ -510,6 +539,9 @@ export default function HamiltonianRoadGenerator() {
         }))
         return
       }
+
+      // Mark cell as pending
+      hoverQueue.markPending(row, col)
 
       if (hoverTimerRef.current) {
         clearTimeout(hoverTimerRef.current)
@@ -523,8 +555,13 @@ export default function HamiltonianRoadGenerator() {
       hoverTimerRef.current = setTimeout(async () => {
         const pending = pendingHoverRef.current
         if (!pending || pending.row !== row || pending.col !== col) {
+          // Mark as idle if we're no longer hovering this cell
+          hoverQueue.markIdle(row, col)
           return
         }
+
+        // Mark cell as processing
+        hoverQueue.markProcessing(row, col)
 
         const maxIterations = calculateMaxIterations(gridSize)
         const result = await findHamiltonianPathAsync(
@@ -534,6 +571,9 @@ export default function HamiltonianRoadGenerator() {
           maxIterations,
         )
         const resultPath = result.found ? result.path : []
+
+        // Mark cell as completed
+        hoverQueue.markCompleted(row, col, result.found)
 
         pathCacheRef.current.set(cacheKey, resultPath)
 
@@ -549,7 +589,16 @@ export default function HamiltonianRoadGenerator() {
         })
       }, HOVER_DEBOUNCE_MS)
     },
-    [mode, startPoint, gridSize],
+    [
+      mode,
+      startPoint,
+      gridSize,
+      hoverQueue.markCached,
+      hoverQueue.markPending,
+      hoverQueue.markIdle,
+      hoverQueue.markProcessing,
+      hoverQueue.markCompleted,
+    ],
   )
 
   const handleCellLeave = useCallback(() => {
@@ -557,6 +606,14 @@ export default function HamiltonianRoadGenerator() {
       if (hoverTimerRef.current) {
         clearTimeout(hoverTimerRef.current)
         hoverTimerRef.current = null
+      }
+      // Mark the pending cell as idle if it hasn't completed yet
+      const pending = pendingHoverRef.current
+      if (pending) {
+        const cellState = hoverQueue.getCellState(pending.row, pending.col)
+        if (cellState && (cellState.status === "pending" || cellState.status === "processing")) {
+          hoverQueue.markIdle(pending.row, pending.col)
+        }
       }
       pendingHoverRef.current = null
       setState((prev) => ({
@@ -566,7 +623,7 @@ export default function HamiltonianRoadGenerator() {
         isCalculating: false,
       }))
     }
-  }, [mode])
+  }, [mode, hoverQueue.getCellState, hoverQueue.markIdle])
 
   // ============================================================================
   // Computed Values
@@ -610,35 +667,47 @@ export default function HamiltonianRoadGenerator() {
         mode={mode}
       />
 
-      <div className='flex-1 flex items-center justify-center p-4 overflow-auto bg-gray-50'>
-        <div
-          className='inline-grid border border-gray-400'
-          style={{ gridTemplateColumns: `repeat(${gridSize.cols}, 1fr)` }}
-        >
-          {Array(gridSize.rows)
-            .fill(null)
-            .map((_, rowIdx) =>
-              Array(gridSize.cols)
-                .fill(null)
-                .map((_, colIdx) => (
-                  <GridCell
-                    key={`cell-${rowIdx}-${colIdx}`}
-                    row={rowIdx}
-                    col={colIdx}
-                    cell={displayGrid[rowIdx]?.[colIdx] ?? null}
-                    isStart={startPoint?.row === rowIdx && startPoint?.col === colIdx}
-                    isEnd={endPoint?.row === rowIdx && endPoint?.col === colIdx}
-                    isHover={hoverPoint?.row === rowIdx && hoverPoint?.col === colIdx}
-                    isPreviewMode={isPreviewMode}
-                    hasPreviewPath={previewPath.length > 0}
-                    parity={parityTable[rowIdx]?.[colIdx] ?? 0}
-                    mode={mode}
-                    onClick={() => handleCellClick(rowIdx, colIdx)}
-                    onMouseEnter={() => handleCellHover(rowIdx, colIdx)}
-                    onMouseLeave={handleCellLeave}
-                  />
-                )),
-            )}
+      <div className='flex-1 flex overflow-hidden'>
+        {/* Main grid area */}
+        <div className='flex-1 flex items-center justify-center p-4 overflow-auto bg-gray-50'>
+          <div
+            className='inline-grid border border-gray-400'
+            style={{ gridTemplateColumns: `repeat(${gridSize.cols}, 1fr)` }}
+          >
+            {Array(gridSize.rows)
+              .fill(null)
+              .map((_, rowIdx) =>
+                Array(gridSize.cols)
+                  .fill(null)
+                  .map((_, colIdx) => (
+                    <GridCell
+                      key={`cell-${rowIdx}-${colIdx}`}
+                      row={rowIdx}
+                      col={colIdx}
+                      cell={displayGrid[rowIdx]?.[colIdx] ?? null}
+                      isStart={startPoint?.row === rowIdx && startPoint?.col === colIdx}
+                      isEnd={endPoint?.row === rowIdx && endPoint?.col === colIdx}
+                      isHover={hoverPoint?.row === rowIdx && hoverPoint?.col === colIdx}
+                      isPreviewMode={isPreviewMode}
+                      hasPreviewPath={previewPath.length > 0}
+                      parity={parityTable[rowIdx]?.[colIdx] ?? 0}
+                      mode={mode}
+                      onClick={() => handleCellClick(rowIdx, colIdx)}
+                      onMouseEnter={() => handleCellHover(rowIdx, colIdx)}
+                      onMouseLeave={handleCellLeave}
+                    />
+                  )),
+              )}
+          </div>
+        </div>
+
+        {/* Metrics panel - right sidebar */}
+        <div className='w-64 shrink-0'>
+          <RequestMetricsPanel
+            metrics={hoverQueue.metrics}
+            cellStates={hoverQueue.cellStates}
+            gridSize={hoverQueue.gridSize}
+          />
         </div>
       </div>
 
