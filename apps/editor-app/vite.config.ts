@@ -21,6 +21,9 @@ export default defineConfig({
   preview: {
     port: 5173,
   },
+  worker: {
+    format: "es",
+  },
   optimizeDeps: {
     exclude: ["@hamiltonian/lib", "@hamiltonian/wasm"],
   },

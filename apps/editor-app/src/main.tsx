@@ -2,12 +2,19 @@ import React from "react"
 import ReactDOM from "react-dom/client"
 import App from "./App"
 import "./index.css"
-import { initWasm } from "@hamiltonian/lib"
+import { initWasm, initWorkerWithInstance } from "@hamiltonian/lib"
+import HamiltonianWorker from "./worker/hamiltonian.worker?worker"
 
 async function init() {
   try {
+    // Initialize WASM for sync API
     await initWasm()
-    console.log("WASM module initialized successfully!")
+
+    // Create and initialize Worker for async API
+    const worker = new HamiltonianWorker()
+    await initWorkerWithInstance(worker)
+
+    console.log("WASM module and Worker initialized successfully!")
 
     const rootElement = document.getElementById("root")
     if (rootElement) {

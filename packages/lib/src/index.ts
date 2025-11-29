@@ -131,3 +131,13 @@ export function createEmptyGrid(gridSize: GridSize): RoadGrid {
 
 // Re-export types
 export type { PathResult as PathResultType, CellData as CellDataType }
+
+// Re-export async API
+export {
+  findHamiltonianPathAsync,
+  getCellParityAsync,
+  hasDifferentParityAsync,
+  initWorkerWithInstance,
+  pathToRoadGridAsync,
+  terminateWorker,
+} from "./async-api"

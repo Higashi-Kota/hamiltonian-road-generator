@@ -3,17 +3,18 @@
  *
  * This component handles all UI rendering and user interactions.
  * It delegates computation to the @hamiltonian/lib WASM module.
+ * Heavy computations run in a Web Worker for better UI responsiveness.
  */
 
 import {
   type CellData,
   createEmptyGrid,
-  findHamiltonianPath,
+  findHamiltonianPathAsync,
   type GridSize,
   getCellParity,
   hasDifferentParity,
   type Point,
-  pathToRoadGrid,
+  pathToRoadGridAsync,
   type RoadGrid,
 } from "@hamiltonian/lib"
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -28,12 +29,26 @@ interface State {
   grid: RoadGrid
   path: Point[]
   previewPath: Point[]
+  previewGrid: RoadGrid | null
   startPoint: Point | null
   endPoint: Point | null
   hoverPoint: Point | null
   mode: Mode
   status: string
   isCalculating: boolean
+}
+
+// Parity table cache - computed once per grid size
+function createParityTable(gridSize: GridSize): number[][] {
+  const table: number[][] = []
+  for (let row = 0; row < gridSize.rows; row++) {
+    const rowTable: number[] = []
+    for (let col = 0; col < gridSize.cols; col++) {
+      rowTable[col] = getCellParity(row, col)
+    }
+    table[row] = rowTable
+  }
+  return table
 }
 
 // ============================================================================
@@ -310,6 +325,7 @@ function createInitialState(gridSize: GridSize): State {
     grid: createEmptyGrid(gridSize),
     path: [],
     previewPath: [],
+    previewGrid: null,
     startPoint: null,
     endPoint: null,
     hoverPoint: null,
@@ -333,8 +349,21 @@ export default function HamiltonianRoadGenerator() {
   // Pending hover point for debounce
   const pendingHoverRef = useRef<Point | null>(null)
 
-  const { grid, path, previewPath, startPoint, endPoint, hoverPoint, mode, status, isCalculating } =
-    state
+  // Parity table cache - recomputed only when grid size changes
+  const parityTable = useMemo(() => createParityTable(gridSize), [gridSize])
+
+  const {
+    grid,
+    path,
+    previewPath,
+    previewGrid,
+    startPoint,
+    endPoint,
+    hoverPoint,
+    mode,
+    status,
+    isCalculating,
+  } = state
 
   // ============================================================================
   // Event Handlers
@@ -364,7 +393,7 @@ export default function HamiltonianRoadGenerator() {
   }, [])
 
   const handleCellClick = useCallback(
-    (row: number, col: number) => {
+    async (row: number, col: number) => {
       if (mode === "start") {
         pathCacheRef.current.clear()
         setState((prev) => ({
@@ -390,12 +419,13 @@ export default function HamiltonianRoadGenerator() {
         let resultPath = previewPath
         if (previewPath.length === 0 || hoverPoint?.row !== row || hoverPoint?.col !== col) {
           if (!startPoint) return
-          const result = findHamiltonianPath(startPoint, { row, col }, gridSize)
+          setState((prev) => ({ ...prev, isCalculating: true }))
+          const result = await findHamiltonianPathAsync(startPoint, { row, col }, gridSize)
           resultPath = result.found ? result.path : []
         }
 
         if (resultPath.length > 0) {
-          const roadGrid = pathToRoadGrid(resultPath, gridSize)
+          const roadGrid = await pathToRoadGridAsync(resultPath, gridSize)
           setState((prev) => ({
             ...prev,
             path: resultPath,
@@ -405,11 +435,13 @@ export default function HamiltonianRoadGenerator() {
             hoverPoint: null,
             mode: "done",
             status: `経路生成完了: ${resultPath.length}セル`,
+            isCalculating: false,
           }))
         } else {
           setState((prev) => ({
             ...prev,
             status: "この配置では一本道を生成できません",
+            isCalculating: false,
           }))
         }
       }
@@ -462,13 +494,13 @@ export default function HamiltonianRoadGenerator() {
         isCalculating: true,
       }))
 
-      hoverTimerRef.current = setTimeout(() => {
+      hoverTimerRef.current = setTimeout(async () => {
         const pending = pendingHoverRef.current
         if (!pending || pending.row !== row || pending.col !== col) {
           return
         }
 
-        const result = findHamiltonianPath(startPoint, { row, col }, gridSize)
+        const result = await findHamiltonianPathAsync(startPoint, { row, col }, gridSize)
         const resultPath = result.found ? result.path : []
 
         pathCacheRef.current.set(cacheKey, resultPath)
@@ -508,9 +540,23 @@ export default function HamiltonianRoadGenerator() {
   // Computed Values
   // ============================================================================
 
-  const previewGrid = useMemo(() => {
-    if (previewPath.length === 0) return null
-    return pathToRoadGrid(previewPath, gridSize)
+  // Compute previewGrid asynchronously when previewPath changes
+  useEffect(() => {
+    if (previewPath.length === 0) {
+      setState((prev) => ({ ...prev, previewGrid: null }))
+      return
+    }
+
+    let cancelled = false
+    pathToRoadGridAsync(previewPath, gridSize).then((roadGrid) => {
+      if (!cancelled) {
+        setState((prev) => ({ ...prev, previewGrid: roadGrid }))
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
   }, [previewPath, gridSize])
 
   const displayGrid = mode === "end" && previewGrid ? previewGrid : grid
@@ -553,7 +599,7 @@ export default function HamiltonianRoadGenerator() {
                     isHover={hoverPoint?.row === rowIdx && hoverPoint?.col === colIdx}
                     isPreviewMode={isPreviewMode}
                     hasPreviewPath={previewPath.length > 0}
-                    parity={getCellParity(rowIdx, colIdx)}
+                    parity={parityTable[rowIdx]?.[colIdx] ?? 0}
                     mode={mode}
                     onClick={() => handleCellClick(rowIdx, colIdx)}
                     onMouseEnter={() => handleCellHover(rowIdx, colIdx)}
