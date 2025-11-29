@@ -52,9 +52,9 @@ const DIRECTIONS: [(i32, i32, &str); 4] = [
     (0, 1, "right"),
 ];
 
-// Maximum supported grid size: 20x20 = 400 cells
-// We use 7 x u64 = 448 bits to cover this
-const BITSET_SIZE: usize = 7;
+// Maximum supported grid size: 20x40 = 800 cells
+// We use 13 x u64 = 832 bits to cover this
+const BITSET_SIZE: usize = 13;
 
 /// Compact bitset for tracking visited cells
 /// Much faster than Vec<Vec<bool>> due to better cache locality

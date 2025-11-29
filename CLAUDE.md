@@ -73,10 +73,11 @@ pnpm package:update   # Update packages (taze -w --install)
 
 ### Algorithm (lib.rs)
 - **Backtracking with enhanced Warnsdorff's heuristic**
-- **VisitedBitset**: Compact u64 array for O(1) visited checks (supports up to 20×20 grids)
+- **VisitedBitset**: Compact u64 array for O(1) visited checks (supports up to 20×40 = 800 cells)
 - **Heuristics**: Neighbor count + corner priority + distance-to-target + urgency bonus
 - **Connectivity pruning**: DFS check to skip paths that would disconnect remaining cells
 - **Parity check**: Early exit for impossible start/end combinations based on checkerboard coloring
+- **Adaptive iterations**: Max iterations scale with grid size (500K-10M)
 
 ### Key Files
 - `packages/crates/hamiltonian-wasm/src/lib.rs`: Core algorithm with `find_hamiltonian_path`, `path_to_road_grid` WASM exports

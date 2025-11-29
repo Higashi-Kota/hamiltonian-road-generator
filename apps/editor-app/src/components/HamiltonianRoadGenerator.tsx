@@ -51,6 +51,26 @@ function createParityTable(gridSize: GridSize): number[][] {
   return table
 }
 
+// Calculate optimal max iterations based on grid size
+// Larger grids need more iterations but with diminishing returns
+function calculateMaxIterations(gridSize: GridSize): number {
+  const totalCells = gridSize.rows * gridSize.cols
+  if (totalCells <= 100) {
+    // Small grids (up to 10x10): 500K iterations
+    return 500_000
+  }
+  if (totalCells <= 400) {
+    // Medium grids (up to 20x20): 2M iterations
+    return 2_000_000
+  }
+  if (totalCells <= 1000) {
+    // Large grids (up to ~32x32): 5M iterations
+    return 5_000_000
+  }
+  // Very large grids: 10M iterations (practical upper limit)
+  return 10_000_000
+}
+
 // ============================================================================
 // UI Components
 // ============================================================================
@@ -233,7 +253,7 @@ function Toolbar({ gridSize, onResize, onReset, status, isCalculating, mode }: T
       <input
         type='number'
         min='2'
-        max='15'
+        max='20'
         value={gridSize.rows}
         onChange={(e) => onResize(parseInt(e.target.value, 10) || 2, gridSize.cols)}
         className='w-14 bg-white border border-gray-300 rounded px-2 py-1 text-sm'
@@ -242,7 +262,7 @@ function Toolbar({ gridSize, onResize, onReset, status, isCalculating, mode }: T
       <input
         type='number'
         min='2'
-        max='20'
+        max='40'
         value={gridSize.cols}
         onChange={(e) => onResize(gridSize.rows, parseInt(e.target.value, 10) || 2)}
         className='w-14 bg-white border border-gray-300 rounded px-2 py-1 text-sm'
@@ -370,8 +390,8 @@ export default function HamiltonianRoadGenerator() {
   // ============================================================================
 
   const handleResize = useCallback((rows: number, cols: number) => {
-    const r = Math.max(2, Math.min(15, rows))
-    const c = Math.max(2, Math.min(20, cols))
+    const r = Math.max(2, Math.min(20, rows))
+    const c = Math.max(2, Math.min(40, cols))
     const newSize = { rows: r, cols: c }
     setGridSize(newSize)
     setState(createInitialState(newSize))
@@ -420,7 +440,13 @@ export default function HamiltonianRoadGenerator() {
         if (previewPath.length === 0 || hoverPoint?.row !== row || hoverPoint?.col !== col) {
           if (!startPoint) return
           setState((prev) => ({ ...prev, isCalculating: true }))
-          const result = await findHamiltonianPathAsync(startPoint, { row, col }, gridSize)
+          const maxIterations = calculateMaxIterations(gridSize)
+          const result = await findHamiltonianPathAsync(
+            startPoint,
+            { row, col },
+            gridSize,
+            maxIterations,
+          )
           resultPath = result.found ? result.path : []
         }
 
@@ -500,7 +526,13 @@ export default function HamiltonianRoadGenerator() {
           return
         }
 
-        const result = await findHamiltonianPathAsync(startPoint, { row, col }, gridSize)
+        const maxIterations = calculateMaxIterations(gridSize)
+        const result = await findHamiltonianPathAsync(
+          startPoint,
+          { row, col },
+          gridSize,
+          maxIterations,
+        )
         const resultPath = result.found ? result.path : []
 
         pathCacheRef.current.set(cacheKey, resultPath)
