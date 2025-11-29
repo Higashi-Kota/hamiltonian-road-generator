@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build outputs (will be built in container)
+dist/
+**/dist/
+packages/crates/hamiltonian-wasm/pkg/
+packages/crates/hamiltonian-wasm/target/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.*
+
+# Documentation (not needed for build)
+CLAUDE.md
+README.md
+LICENSE
+
+# Config files not needed for build
+taze.config.js
