@@ -4,7 +4,6 @@
 //! finding algorithm optimized for WebAssembly deployment.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use wasm_bindgen::prelude::*;
 
 // パニック時のスタックトレースをより分かりやすくする
@@ -90,68 +89,143 @@ fn get_unvisited_neighbors(
     neighbors
 }
 
-/// Sort neighbors using Warnsdorff's heuristic
+/// Count unvisited neighbors (optimized - no allocation)
+#[inline]
+fn count_unvisited_neighbors(row: i32, col: i32, grid_size: &GridSize, visited: &[Vec<bool>]) -> u8 {
+    let mut count = 0u8;
+    for &(dr, dc, _) in &DIRECTIONS {
+        let nr = row + dr;
+        let nc = col + dc;
+        if is_in_bounds(nr, nc, grid_size) && !visited[nr as usize][nc as usize] {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Sort neighbors using Warnsdorff's heuristic (optimized with cached counts)
 fn sort_by_warnsdorff(
     neighbors: &mut Vec<(i32, i32, &'static str)>,
     target: &Point,
     grid_size: &GridSize,
     visited: &[Vec<bool>],
 ) {
-    neighbors.sort_by(|a, b| {
-        let a_is_target = a.0 == target.row && a.1 == target.col;
-        let b_is_target = b.0 == target.row && b.1 == target.col;
+    // Cache neighbor counts before sorting to avoid repeated calculations
+    let mut neighbors_with_counts: Vec<((i32, i32, &'static str), u8)> = neighbors
+        .iter()
+        .map(|&n| {
+            let is_target = n.0 == target.row && n.1 == target.col;
+            let count = if is_target {
+                u8::MAX // Target always sorted last
+            } else {
+                count_unvisited_neighbors(n.0, n.1, grid_size, visited)
+            };
+            (n, count)
+        })
+        .collect();
 
-        // Keep target for last
-        match (a_is_target, b_is_target) {
-            (true, false) => std::cmp::Ordering::Greater,
-            (false, true) => std::cmp::Ordering::Less,
-            _ => {
-                // Sort by number of unvisited neighbors (fewer first)
-                let a_count = get_unvisited_neighbors(a.0, a.1, grid_size, visited).len();
-                let b_count = get_unvisited_neighbors(b.0, b.1, grid_size, visited).len();
-                a_count.cmp(&b_count)
-            }
-        }
-    });
+    // Sort by cached count (fewer neighbors first, target last)
+    neighbors_with_counts.sort_by_key(|(_, count)| *count);
+
+    // Update original vector
+    for (i, (neighbor, _)) in neighbors_with_counts.into_iter().enumerate() {
+        neighbors[i] = neighbor;
+    }
 }
 
-/// Check if remaining unvisited cells are connected
-fn is_remaining_connected(grid_size: &GridSize, visited: &[Vec<bool>]) -> bool {
-    // Collect unvisited cells
-    let mut unvisited: Vec<Point> = Vec::new();
-    for r in 0..grid_size.rows {
-        for c in 0..grid_size.cols {
-            if !visited[r as usize][c as usize] {
-                unvisited.push(Point { row: r, col: c });
-            }
-        }
-    }
-
-    if unvisited.len() <= 1 {
+/// Check if remaining unvisited cells are connected (optimized version)
+/// Uses a more efficient approach: instead of collecting all unvisited cells first,
+/// we do a single BFS/DFS and count reachable cells.
+fn is_remaining_connected(
+    grid_size: &GridSize,
+    visited: &[Vec<bool>],
+    unvisited_count: usize,
+) -> bool {
+    if unvisited_count <= 1 {
         return true;
     }
 
-    // BFS from first unvisited cell
-    let mut reachable: HashSet<(i32, i32)> = HashSet::new();
-    let mut queue: Vec<Point> = vec![unvisited[0]];
-    reachable.insert((unvisited[0].row, unvisited[0].col));
-
-    while let Some(current) = queue.pop() {
-        for &(dr, dc, _) in &DIRECTIONS {
-            let nr = current.row + dr;
-            let nc = current.col + dc;
-
-            if is_in_bounds(nr, nc, grid_size)
-                && !visited[nr as usize][nc as usize]
-                && !reachable.contains(&(nr, nc))
-            {
-                reachable.insert((nr, nc));
-                queue.push(Point { row: nr, col: nc });
+    // Find first unvisited cell
+    let mut start: Option<(i32, i32)> = None;
+    'outer: for r in 0..grid_size.rows {
+        for c in 0..grid_size.cols {
+            if !visited[r as usize][c as usize] {
+                start = Some((r, c));
+                break 'outer;
             }
         }
     }
 
-    reachable.len() == unvisited.len()
+    let start = match start {
+        Some(s) => s,
+        None => return true,
+    };
+
+    // DFS using stack (faster than BFS for connectivity check)
+    // Use a flat visited array for BFS to avoid HashSet overhead
+    let rows = grid_size.rows as usize;
+    let cols = grid_size.cols as usize;
+    let mut bfs_visited = vec![false; rows * cols];
+    let mut stack = Vec::with_capacity(unvisited_count);
+    let mut reachable_count = 0usize;
+
+    stack.push(start);
+    bfs_visited[start.0 as usize * cols + start.1 as usize] = true;
+
+    while let Some((r, c)) = stack.pop() {
+        reachable_count += 1;
+
+        // Early exit: if we've found enough cells, we're connected
+        if reachable_count == unvisited_count {
+            return true;
+        }
+
+        for &(dr, dc, _) in &DIRECTIONS {
+            let nr = r + dr;
+            let nc = c + dc;
+
+            if is_in_bounds(nr, nc, grid_size) {
+                let idx = nr as usize * cols + nc as usize;
+                if !visited[nr as usize][nc as usize] && !bfs_visited[idx] {
+                    bfs_visited[idx] = true;
+                    stack.push((nr, nc));
+                }
+            }
+        }
+    }
+
+    reachable_count == unvisited_count
+}
+
+/// Check if a cell is an articulation point (removing it disconnects the graph)
+/// This is a lighter-weight check that can be used before the full connectivity check
+#[inline]
+fn is_likely_articulation_point(
+    row: i32,
+    col: i32,
+    grid_size: &GridSize,
+    visited: &[Vec<bool>],
+) -> bool {
+    // Count unvisited neighbors
+    let neighbor_count = count_unvisited_neighbors(row, col, grid_size, visited);
+
+    // If cell has 0 or 1 unvisited neighbor, it's not an articulation point
+    // (it's either isolated or a leaf)
+    if neighbor_count <= 1 {
+        return false;
+    }
+
+    // Quick heuristic: corner and edge cells with 2+ unvisited neighbors
+    // are less likely to be articulation points
+    let is_corner = (row == 0 || row == grid_size.rows - 1)
+        && (col == 0 || col == grid_size.cols - 1);
+    if is_corner && neighbor_count == 2 {
+        return false;
+    }
+
+    // For cells with 3+ neighbors in the interior, they might be articulation points
+    // This is a heuristic - we'll do the full check for these
+    neighbor_count >= 2
 }
 
 /// Main Hamiltonian path finding algorithm
@@ -161,7 +235,7 @@ fn find_hamiltonian_path_internal(
     grid_size: GridSize,
     max_iterations: u32,
 ) -> PathResult {
-    // Validation
+    // Validation: same start and end
     if start == end {
         return PathResult {
             found: false,
@@ -171,18 +245,44 @@ fn find_hamiltonian_path_internal(
     }
 
     let total_cells = (grid_size.rows * grid_size.cols) as usize;
+
+    // Early exit: parity check for even-sized grids
+    // In a checkerboard pattern, a Hamiltonian path alternates between black and white cells.
+    // For even-sized grids, start and end must have different parities.
+    // For odd-sized grids, start and end must have the same parity.
+    let start_parity = get_cell_parity(start.row, start.col);
+    let end_parity = get_cell_parity(end.row, end.col);
+    let is_even_grid = total_cells % 2 == 0;
+
+    if is_even_grid && start_parity == end_parity {
+        // Even grid with same parity endpoints: impossible
+        return PathResult {
+            found: false,
+            path: vec![],
+            iterations: 0,
+        };
+    }
+
+    if !is_even_grid && start_parity != end_parity {
+        // Odd grid with different parity endpoints: impossible
+        return PathResult {
+            found: false,
+            path: vec![],
+            iterations: 0,
+        };
+    }
     let mut visited = vec![vec![false; grid_size.cols as usize]; grid_size.rows as usize];
     let mut result_path: Vec<Point> = Vec::new();
     let mut found = false;
     let mut iterations: u32 = 0;
 
-    // Recursive backtracking
+    // Recursive backtracking with unvisited count tracking
     fn backtrack(
         path: &mut Vec<Point>,
         end: &Point,
         grid_size: &GridSize,
         visited: &mut [Vec<bool>],
-        total_cells: usize,
+        unvisited_count: usize,
         max_iterations: u32,
         iterations: &mut u32,
         found: &mut bool,
@@ -196,7 +296,7 @@ fn find_hamiltonian_path_internal(
         let current = *path.last().unwrap();
 
         // Success: visited all cells and reached endpoint
-        if path.len() == total_cells {
+        if unvisited_count == 0 {
             if current == *end {
                 *found = true;
                 *result_path = path.clone();
@@ -217,9 +317,17 @@ fn find_hamiltonian_path_internal(
             let is_endpoint = nr == end.row && nc == end.col;
 
             visited[nr as usize][nc as usize] = true;
+            let new_unvisited = unvisited_count - 1;
 
-            // Pruning: check connectivity
-            if !is_endpoint && !is_remaining_connected(grid_size, visited) {
+            // Pruning: check connectivity only when necessary
+            // Skip check if moving to endpoint (it doesn't need further connections)
+            // Also skip if only 1-2 cells remain (always connected or trivially checkable)
+            let should_check_connectivity = !is_endpoint
+                && new_unvisited > 2
+                && is_likely_articulation_point(nr, nc, grid_size, visited);
+
+            if should_check_connectivity && !is_remaining_connected(grid_size, visited, new_unvisited)
+            {
                 visited[nr as usize][nc as usize] = false;
                 continue;
             }
@@ -231,7 +339,7 @@ fn find_hamiltonian_path_internal(
                 end,
                 grid_size,
                 visited,
-                total_cells,
+                new_unvisited,
                 max_iterations,
                 iterations,
                 found,
@@ -250,13 +358,14 @@ fn find_hamiltonian_path_internal(
     // Start backtracking
     visited[start.row as usize][start.col as usize] = true;
     let mut path = vec![start];
+    let initial_unvisited = total_cells - 1; // We've visited the start cell
 
     backtrack(
         &mut path,
         &end,
         &grid_size,
         &mut visited,
-        total_cells,
+        initial_unvisited,
         max_iterations,
         &mut iterations,
         &mut found,
