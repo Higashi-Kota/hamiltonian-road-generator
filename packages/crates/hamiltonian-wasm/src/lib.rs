@@ -663,4 +663,185 @@ mod tests {
         assert_eq!(get_cell_parity(1, 0), 1);
         assert_eq!(get_cell_parity(1, 1), 0);
     }
+
+    // ========================================================================
+    // Large Grid Tests - Investigation of NotFound Bias
+    // ========================================================================
+
+    #[test]
+    fn test_6x6_grid_success_rate() {
+        // 6x6 = 36 cells (even), need different parity
+        let grid_size = GridSize { rows: 6, cols: 6 };
+        let max_iterations = 500_000;
+        let mut success_count = 0;
+        let attempts = 10;
+
+        // Test various valid start/end combinations
+        let test_cases = vec![
+            (Point { row: 0, col: 0 }, Point { row: 0, col: 1 }),
+            (Point { row: 0, col: 0 }, Point { row: 1, col: 0 }),
+            (Point { row: 0, col: 0 }, Point { row: 5, col: 0 }),
+            (Point { row: 0, col: 0 }, Point { row: 0, col: 5 }),
+            (Point { row: 0, col: 0 }, Point { row: 5, col: 4 }),
+            (Point { row: 2, col: 2 }, Point { row: 3, col: 3 }),
+            (Point { row: 1, col: 1 }, Point { row: 4, col: 4 }),
+            (Point { row: 0, col: 0 }, Point { row: 3, col: 2 }),
+            (Point { row: 5, col: 5 }, Point { row: 0, col: 1 }),
+            (Point { row: 3, col: 3 }, Point { row: 0, col: 0 }),
+        ];
+
+        for (start, end) in test_cases.iter().take(attempts) {
+            let result = find_hamiltonian_path_internal(*start, *end, grid_size, max_iterations);
+            if result.found {
+                success_count += 1;
+                assert_eq!(result.path.len(), 36);
+            }
+            eprintln!(
+                "6x6 ({},{}) -> ({},{}): {} in {} iterations",
+                start.row, start.col, end.row, end.col,
+                if result.found { "FOUND" } else { "NOT FOUND" },
+                result.iterations
+            );
+        }
+
+        eprintln!("6x6 success rate: {}/{} ({:.0}%)", success_count, attempts, (success_count as f64 / attempts as f64) * 100.0);
+        // 6x6 should have reasonable success rate (>50%)
+        assert!(success_count >= 5, "6x6 success rate too low: {}/{}", success_count, attempts);
+    }
+
+    #[test]
+    fn test_8x8_grid_success_rate() {
+        // 8x8 = 64 cells (even), need different parity
+        let grid_size = GridSize { rows: 8, cols: 8 };
+        let max_iterations = 2_000_000;
+        let mut success_count = 0;
+        let attempts = 5;
+
+        let test_cases = vec![
+            (Point { row: 0, col: 0 }, Point { row: 0, col: 1 }),
+            (Point { row: 0, col: 0 }, Point { row: 1, col: 0 }),
+            (Point { row: 0, col: 0 }, Point { row: 7, col: 0 }),
+            (Point { row: 0, col: 0 }, Point { row: 0, col: 7 }),
+            (Point { row: 3, col: 3 }, Point { row: 4, col: 4 }),
+        ];
+
+        for (start, end) in test_cases.iter().take(attempts) {
+            let result = find_hamiltonian_path_internal(*start, *end, grid_size, max_iterations);
+            if result.found {
+                success_count += 1;
+                assert_eq!(result.path.len(), 64);
+            }
+            eprintln!(
+                "8x8 ({},{}) -> ({},{}): {} in {} iterations",
+                start.row, start.col, end.row, end.col,
+                if result.found { "FOUND" } else { "NOT FOUND" },
+                result.iterations
+            );
+        }
+
+        eprintln!("8x8 success rate: {}/{} ({:.0}%)", success_count, attempts, (success_count as f64 / attempts as f64) * 100.0);
+    }
+
+    #[test]
+    fn test_10x10_grid_iteration_limit_impact() {
+        // This test demonstrates how iteration limits affect success rate
+        let grid_size = GridSize { rows: 10, cols: 10 };
+        let start = Point { row: 0, col: 0 };
+        let end = Point { row: 0, col: 1 }; // Different parity
+
+        // Test with increasing iteration limits
+        let limits = vec![100_000, 500_000, 2_000_000, 5_000_000];
+
+        eprintln!("\n10x10 Grid - Iteration Limit Impact:");
+        for limit in limits {
+            let result = find_hamiltonian_path_internal(start, end, grid_size, limit);
+            eprintln!(
+                "  Limit {:>9}: {} (used {} iterations)",
+                limit,
+                if result.found { "FOUND" } else { "NOT FOUND" },
+                result.iterations
+            );
+
+            // If found at lower limit, higher limits should also find it
+            // (deterministic algorithm)
+        }
+    }
+
+    #[test]
+    fn test_10x10_multiple_endpoints() {
+        // Test multiple endpoints to see success distribution
+        let grid_size = GridSize { rows: 10, cols: 10 };
+        let start = Point { row: 0, col: 0 };
+        let max_iterations = 500_000;
+
+        let mut found_count = 0;
+        let mut timeout_count = 0;
+        let test_count = 20;
+
+        eprintln!("\n10x10 Grid - Multiple Endpoints Test:");
+        for i in 0..test_count {
+            // Generate endpoints with different parity from (0,0)
+            let row = i % 10;
+            let col = if (row + 0) % 2 == 0 { 1 } else { 0 }; // Ensure different parity
+            let end = Point { row, col };
+
+            let result = find_hamiltonian_path_internal(start, end, grid_size, max_iterations);
+
+            if result.found {
+                found_count += 1;
+            } else if result.iterations >= max_iterations {
+                timeout_count += 1;
+            }
+
+            eprintln!(
+                "  (0,0) -> ({},{}): {} in {} iter",
+                row, col,
+                if result.found { "FOUND" } else { "NOT" },
+                result.iterations
+            );
+        }
+
+        eprintln!(
+            "\nSummary: Found {}/{} ({:.0}%), Timeout {}/{}",
+            found_count, test_count, (found_count as f64 / test_count as f64) * 100.0,
+            timeout_count, test_count
+        );
+
+        // Key insight: if timeout_count is high, the algorithm is hitting iteration limits
+        // This confirms the hypothesis about large grids timing out
+    }
+
+    #[test]
+    fn test_path_validity() {
+        // Verify that returned paths are valid Hamiltonian paths
+        let grid_size = GridSize { rows: 5, cols: 5 };
+        let start = Point { row: 0, col: 0 };
+        let end = Point { row: 4, col: 4 }; // Same parity for odd grid
+
+        let result = find_hamiltonian_path_internal(start, end, grid_size, 500_000);
+
+        if result.found {
+            // Check path length
+            assert_eq!(result.path.len(), 25);
+
+            // Check start and end
+            assert_eq!(result.path[0], start);
+            assert_eq!(result.path[24], end);
+
+            // Check all cells are unique
+            let mut visited = std::collections::HashSet::new();
+            for p in &result.path {
+                assert!(visited.insert((p.row, p.col)), "Duplicate cell in path");
+            }
+
+            // Check adjacency
+            for i in 1..result.path.len() {
+                let prev = &result.path[i - 1];
+                let curr = &result.path[i];
+                let dr = (curr.row - prev.row).abs();
+                let dc = (curr.col - prev.col).abs();
+                assert_eq!(dr + dc, 1, "Non-adjacent cells in path");
+            }
+        }
+    }
 }
