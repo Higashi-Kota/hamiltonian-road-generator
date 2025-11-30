@@ -149,5 +149,3 @@ export {
   type MetricsListener,
   type QueueMetrics,
 } from "./hover-queue"
-// Re-export queue utilities
-export { SmartQueue } from "./smart-queue"
